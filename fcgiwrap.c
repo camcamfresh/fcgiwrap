@@ -596,7 +596,7 @@ static void handle_fcgi_request(void)
 			memcached_return_t rc;
 
 			pthread_mutex_lock(&cache->mutex);
-			rc = memcached_add(cache->accessor, http_host, strlen(http_host), bad_gate, strlen(bad_gate), (time_t) 300, 0);
+			rc = memcached_add(cache->accessor, http_host, strlen(http_host), bad_gate, strlen(bad_gate), (time_t) 90, 0);
 			pthread_mutex_unlock(&cache->mutex);
 
 			if(rc != MEMCACHED_SUCCESS) {
