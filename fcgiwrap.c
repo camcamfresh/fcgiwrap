@@ -605,7 +605,7 @@ static void handle_fcgi_request(void)
 				char * response = memcached_get(cache->accessor, http_host, strlen(http_host), &response_len, 0, &rc);
 				
 				if(rc == MEMCACHED_SUCCESS && response != NULL) {
-					printf("%.*s", response_len, response);
+					printf("%.*s", (int) response_len, response);
 					fflush(stdout);
 					fprintf(stderr, "Response found in cache dropping request %s\n", http_host);
 					_exit(0);
