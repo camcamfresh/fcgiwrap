@@ -47,6 +47,10 @@
 #include <sys/un.h>
 #include <netinet/in.h>
 
+#include <libmemcached/memcached.h>
+#include <pthread.h>
+#include <sys/mman.h>
+
 #ifdef HAVE_SYSTEMD
 #include <systemd/sd-daemon.h>
 #endif
@@ -81,6 +85,12 @@ static const char * blacklisted_env_vars[] = {
 	"SERVER_SOFTWARE",
 	NULL,
 };
+
+static struct cache_context {
+  memcached_st * accessor;
+  memcached_st context;
+  pthread_mutex_t mutex;
+} * cache;
 
 static int stderr_to_fastcgi = 0;
 
@@ -577,7 +587,48 @@ static void handle_fcgi_request(void)
 				}
 			}
 
-			execl(filename, filename, (void *)NULL);
+			char * http_host = getenv("HTTP_HOST");
+			if (http_host == NULL || strcmp("", http_host) == 0) {
+				cgi_error("502 Bad Gateway", "Cannot determine requested host", http_host);
+			}
+			
+			const char * bad_gate = "502 Bad Gateway";
+			memcached_return_t rc;
+
+			pthread_mutex_lock(&cache->mutex);
+			rc = memcached_add(cache->accessor, http_host, strlen(http_host), bad_gate, strlen(bad_gate), (time_t) 300, 0);
+			pthread_mutex_unlock(&cache->mutex);
+
+			if(rc != MEMCACHED_SUCCESS) {
+				// Add failed because response already exist in cache.
+				size_t response_len;
+				char * response = memcached_get(cache->accessor, http_host, strlen(http_host), &response_len, 0, &rc);
+				
+				if(rc == MEMCACHED_SUCCESS && response != NULL) {
+					printf("%.*s", response_len, response);
+					fflush(stdout);
+					fprintf(stderr, "Response found in cache dropping request %s\n", http_host);
+					_exit(0);
+				}
+			}
+
+			FILE * process_file = popen(filename, "r");
+			if(process_file) {
+				char response[1024];
+				int response_len = (int) fread(response, 1, 1024, process_file);
+				pclose(process_file);
+
+				pthread_mutex_lock(&cache->mutex);
+				rc = memcached_set(cache->accessor, http_host, strlen(http_host), response, response_len, (time_t) 300, 0);
+				pthread_mutex_unlock(&cache->mutex);
+
+				printf("%.*s", response_len, response);
+				fflush(stdout);
+				_exit(0);
+			} else {
+				execl(filename, filename, (void *)NULL);
+			}
+			
 			cgi_error("502 Bad Gateway", "Cannot execute script", filename);
 
 		default: /* parent */
@@ -799,6 +850,35 @@ invalid_url:
 	return fd;
 }
 
+static void setup_cache() {
+  const char * config = "--SOCKET=\"/var/run/memcached.sock\"";
+
+  char error_msg[1024];
+  if(libmemcached_check_configuration(config, strlen(config), error_msg, 1024) != MEMCACHED_SUCCESS) {
+    fprintf(stderr, "Problem creating memcached with conf %s:\n%s\n", config, error_msg);
+	abort();
+  }
+
+  memcached_st * memcache = memcached(config, strlen(config));
+  if(memcache == NULL) {
+	  fprintf(stderr, "Failed to initialize memcached structure.\n");
+	  abort();
+  }
+
+  int prot = PROT_READ | PROT_WRITE;
+  int flags = MAP_SHARED | MAP_ANONYMOUS;
+  cache = mmap(NULL, sizeof(struct cache_context), prot, flags, -1, 0);
+  cache->accessor = &cache->context;
+
+  memcached_clone(cache->accessor, memcache);
+  memcached_free(memcache);
+  
+  pthread_mutexattr_t attr;
+  pthread_mutexattr_init(&attr);
+  pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+  pthread_mutex_init(&cache->mutex, &attr);
+}
+
 int main(int argc, char **argv)
 {
 	int nchildren = 1;
@@ -867,6 +947,7 @@ int main(int argc, char **argv)
 		}
 	}
 
+    setup_cache();
 	prefork(nchildren);
 	fcgiwrap_main();
 
