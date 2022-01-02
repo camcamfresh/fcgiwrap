@@ -851,7 +851,7 @@ invalid_url:
 }
 
 static void setup_cache() {
-  const char * config = "--SOCKET=\"/var/run/memcached.sock\"";
+  const char *config = "--SOCKET=\"/var/run/memcached/memcached.sock\"";
 
   char error_msg[1024];
   if(libmemcached_check_configuration(config, strlen(config), error_msg, 1024) != MEMCACHED_SUCCESS) {
